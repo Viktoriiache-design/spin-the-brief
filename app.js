@@ -260,9 +260,98 @@
       accent: mood.accent || null,
     };
   }
+  const moodAllowsDark = (prof) => prof.l[0] <= 35;          // настрій допускає темний фон
+  const moodPrefersDark = (prof) => (prof.l[0] + prof.l[1]) / 2 < 42;
+  const moodPrefersLight = (prof) => (prof.l[0] + prof.l[1]) / 2 > 62;
+
+  /* ---------- Палітра: ролі кольорів і правила пропорцій ---------- */
+  const ROLE_NAMES = { main: "Головний", secondary: "Другорядний", accent: "Акцент", background: "Фон", text: "Текст" };
+  const ROLE_KEYS = ["main", "secondary", "accent", "background", "text"];
+  const ROLES_BY_SIZE = { 3: ROLE_KEYS.slice(0, 3), 4: ROLE_KEYS.slice(0, 4), 5: ROLE_KEYS };
+  /* Правила пропорцій: частки ролей у відсотках. needsDark — лише з темним Фоном;
+     noSchemes — несумісні схеми гармонії. */
+  const RULES = [
+    { id: "60-30-10", size: 3, name: "60-30-10", shares: { main: 60, secondary: 30, accent: 10 }, tip: "Класика: головний колір домінує, другорядний підтримує, акцент — для дрібних деталей." },
+    { id: "70-20-10", size: 3, name: "70-20-10", shares: { main: 70, secondary: 20, accent: 10 }, tip: "Стримано: більше «повітря», головний колір займає майже всю площу." },
+    { id: "85-10-5", size: 3, name: "85-10-5 · мінімалізм", shares: { main: 85, secondary: 10, accent: 5 }, noSchemes: ["triadic", "tetradic"], tip: "Майже монохром: акцент з'являється лише точково." },
+    { id: "duotone", size: 3, name: "Дуотон 47-47-6", shares: { main: 47, secondary: 47, accent: 6 }, tip: "Два рівноправні кольори, акцент — мінімальний." },
+    { id: "60-20-10-10", size: 4, name: "60-20-10-10", shares: { background: 60, main: 20, secondary: 10, accent: 10 }, tip: "Фон задає тон, головний колір веде, другорядний і акцент підсилюють." },
+    { id: "color-block", size: 4, name: "Колор-блокінг 25×4", shares: { main: 25, secondary: 25, accent: 25, background: 25 }, tip: "Рівні сміливі блоки кольору — без ієрархії." },
+    { id: "neutral-base", size: 4, name: "Нейтральна база 70-15-10-5", shares: { background: 70, main: 15, secondary: 10, accent: 5 }, tip: "Спокійна нейтральна база й дозовані кольорові акценти." },
+    { id: "ui", size: 5, name: "Інтерфейсне 50-20-15-10-5", shares: { background: 50, main: 20, text: 15, secondary: 10, accent: 5 }, tip: "Стандарт для сайтів і UI: Фон, чіткий Текст, Акцент — для кнопок і CTA." },
+    { id: "brand", size: 5, name: "Брендове 40-25-15-12-8", shares: { main: 40, background: 25, secondary: 15, text: 12, accent: 8 }, tip: "Бренд-колір домінує на більшій частині площі." },
+    { id: "dark", size: 5, name: "Темна тема 60-15-12-8-5", shares: { background: 60, text: 15, main: 12, secondary: 8, accent: 5 }, needsDark: true, tip: "Темний Фон, світлий Текст, кольори — дозовано." },
+  ];
+  const RULE_BY_ID = Object.fromEntries(RULES.map((r) => [r.id, r]));
+  const CLIENT_RULE = { id: "client", name: "Задано клієнтом", shares: {}, tip: "Кількість кольорів задає обмеження клієнта — правило пропорцій не застосовується." };
+  const SCHEME_BY_ID = Object.fromEntries(SCHEMES.map((s) => [s.id, s]));
+  // зсуви відтінку ролей відносно Головного для кожної схеми
+  const ROLE_OFFSETS = {
+    analogous: { secondary: 32, accent: -48 },
+    complementary: { secondary: 20, accent: 180 },
+    triadic: { secondary: 120, accent: 240 },
+    split: { secondary: 150, accent: 210 },
+    mono: { secondary: 0, accent: 0 },
+    tetradic: { secondary: 90, accent: 180 },
+  };
+  const isDark = (hex) => luminance(hex) < 0.18;
+  const chroma = (hex) => { const c = hexToRgb(hex); return (Math.max(...c) - Math.min(...c)) / 2.55; };
+
+  /** Акцент — найнасиченіший (за хромою, тобто як його бачить око). Якщо акцент задано
+      настроєм, приглушуємо Головний і Другорядний, інакше — підсилюємо сам акцент. */
+  function ensureAccentPops(r, fixedAccent) {
+    const others = () => Math.max(chroma(r.main), chroma(r.secondary));
+    const a = hexToHsl(r.accent);
+    for (let n = 0; n < 40 && chroma(r.accent) < others() + 8; n++) {
+      if (!fixedAccent && (a.s < 100 || Math.abs(a.l - 50) > 2)) {
+        a.s = Math.min(100, a.s + 5);
+        if (a.s >= 100) a.l += a.l > 50 ? -2 : 2;
+        r.accent = hslToHex(a.h, a.s, a.l);
+      } else {
+        for (const k of ["main", "secondary"]) {
+          const c = hexToHsl(r[k]);
+          if (chroma(r[k]) >= chroma(r.accent) - 8) r[k] = hslToHex(c.h, c.s * 0.85, c.l);
+        }
+      }
+    }
+  }
+
+  /** Текст — контраст ≥ 4.5:1 з Фоном. */
+  function fixTextContrast(r) {
+    if (contrast(r.text, r.background) >= 4.5) return;
+    const t = hexToHsl(r.text);
+    const up = isDark(r.background);
+    for (let n = 0; n < 60 && contrast(hslToHex(t.h, t.s, t.l), r.background) < 4.5; n++) {
+      t.l = up ? Math.min(99, t.l + 2) : Math.max(1, t.l - 2);
+      t.s *= 0.97;
+    }
+    r.text = hslToHex(t.h, t.s, t.l);
+    if (contrast(r.text, r.background) < 4.5) r.text = up ? "#FFFFFF" : "#000000";
+  }
+  /** 3 кольори: хоча б одна пара ≥ 4.5:1 — відсуваємо Другорядний (а за потреби й Головний) по світлоті. */
+  function fixTrioContrast(r) {
+    if (bestPair([r.main, r.secondary, r.accent]).ratio >= 4.5) return;
+    const m = hexToHsl(r.main);
+    const s = hexToHsl(r.secondary);
+    const sDown = m.l >= 50; // головний світлий → другорядний темнішає
+    for (let n = 0; n < 70 && contrast(hslToHex(s.h, s.s, s.l), r.main) < 4.5; n++) s.l = sDown ? Math.max(2, s.l - 2) : Math.min(98, s.l + 2);
+    r.secondary = hslToHex(s.h, s.s, s.l);
+    for (let n = 0; n < 40 && contrast(r.main, r.secondary) < 4.5; n++) {
+      m.l = sDown ? Math.min(98, m.l + 2) : Math.max(2, m.l - 2);
+      r.main = hslToHex(m.h, m.s, m.l);
+    }
+  }
+  /** Фон під тему: wantDark=true/false — за потреби міняємо Фон і Текст місцями. */
+  function orientBackground(r, wantDark) {
+    if (wantDark === null || isDark(r.background) === wantDark) return;
+    if (isDark(r.text) === wantDark) [r.background, r.text] = [r.text, r.background];
+    else if (wantDark) r.background = hslToHex(hexToHsl(r.main).h, 14, 8);
+    fixTextContrast(r);
+  }
 
   /** Наскільки кураторська палітра пасує настрою (менше — краще). */
-  const CURATED_FIT = D.palettes.map((p) => p.colors.map(hexToHsl));
+  const curatedHex = (p) => ROLE_KEYS.map((k) => p.roles[k]);
+  const CURATED_FIT = D.palettes.map((p) => curatedHex(p).map(hexToHsl));
   function fitScore(index, prof) {
     const hsls = CURATED_FIT[index];
     let pen = 0;
@@ -278,61 +367,152 @@
     return S.recentPalettes.every((p) => (strict ? hueDist(p.h, h) >= 40 : hueDist(p.h, h) >= 40 || p.scheme !== scheme));
   }
 
-  function generateProcedural(prof) {
-    // база: шукаємо відтінок, далекий від останніх 5 палітр (≥ 40°), інакше — іншу схему
-    let scheme, base;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      scheme = SCHEMES[draw("scheme", SCHEMES.length)];
-      base = randomHue(prof.h);
-      for (let t = 0; t < 40 && !paletteIsDistinct(base, scheme.id, true); t++) base = randomHue(prof.h);
-      if (paletteIsDistinct(base, scheme.id, true)) break;
-      for (let t = 0; t < 30 && !paletteIsDistinct(base, scheme.id, false); t++) base = randomHue(prof.h);
-      if (paletteIsDistinct(base, scheme.id, false)) break;
-    }
-
-    // драбина світлоти: рівномірно в межах настрою, але з мінімальним розкидом,
-    // щоб сусідні кольори не зливалися (особливо в монохромній схемі)
+  /** Процедурні ролі: Головний у межах настрою, Другорядний і Акцент — за схемою,
+      Акцент — найнасиченіший, Фон — нейтральний світлий/темний, Текст — контрастний до Фону. */
+  function generateRoles(prof, schemeId, base, dark) {
+    const off = ROLE_OFFSETS[schemeId] || ROLE_OFFSETS.analogous;
     const [s0, s1] = prof.s;
-    const minSpan = scheme.id === "mono" ? 52 : 28;
-    let [l0, l1] = prof.l;
-    if (l1 - l0 < minSpan) {
-      const c = (l0 + l1) / 2;
-      l0 = clamp(c - minSpan / 2, 5, 95 - minSpan);
-      l1 = l0 + minSpan;
-    }
-    const ladder = [0, 1, 2, 3, 4].map((i) => clamp(l0 + (l1 - l0) * (i / 4) + rand(-1.5, 1.5), 3, 98));
-    const order = shuffle([1, 2, 3]); // базовий відтінок — на середніх тонах
-    const slots = [order[0], 0, 4, order[1], order[2]];
-    let colors = scheme.offsets.map((o, i) => {
-      const li = slots[i];
-      const h = (base + o + rand(-6, 6) + 360) % 360;
-      let s = rand(s0, s1);
-      if (scheme.id !== "mono" && (li === 0 || li === 4)) s *= 0.55; // крайні тони — ближче до нейтральних
-      if (scheme.id === "mono") s = clamp(s + rand(-12, 12), 0, 100);
-      return { h, s, l: ladder[li] };
-    });
-    colors.sort((a, b) => a.l - b.l);
-    let hex = colors.map((c) => hslToHex(c.h, c.s, c.l));
-    if (prof.accent) hex[2] = prof.accent.toUpperCase();
-    hex = ensureContrast(hex);
-    return { colors: hex, scheme: scheme.id, schemeName: scheme.name, h: base, curated: false };
+    const [l0, l1] = prof.l;
+    const mainS = clamp(rand(s0, s1), 6, 86);
+    const mainL = clamp((l0 + l1) / 2 + rand(-8, 8), 22, 74);
+    const secS = clamp(mainS * rand(0.55, 0.85), 4, 80);
+    const secL = clamp(mainL + (mainL > 50 ? -1 : 1) * rand(16, 26), 12, 90);
+    const accS = clamp(Math.max(mainS, secS) + rand(12, 24), 30, 100);
+    let accL = clamp(rand(Math.max(40, l0), Math.min(62, Math.max(l1, 46))), 38, 66);
+    if (schemeId === "mono" && Math.abs(accL - mainL) < 16) accL = clamp(mainL + (mainL > 50 ? -18 : 18), 28, 76);
+    const hue = (o) => (base + o + rand(-5, 5) + 360) % 360;
+    const r = {
+      main: hslToHex(hue(0), mainS, mainL),
+      secondary: hslToHex(hue(off.secondary), secS, secL),
+      accent: prof.accent ? prof.accent.toUpperCase() : hslToHex(hue(off.accent), accS, accL),
+      background: dark ? hslToHex(base, rand(8, 18), rand(6, 11)) : hslToHex(base, rand(6, 14), rand(95, 98)),
+      text: dark ? hslToHex(base, rand(6, 14), rand(91, 95)) : hslToHex(base, rand(12, 24), rand(9, 15)),
+    };
+    ensureAccentPops(r, !!prof.accent);
+    fixTextContrast(r);
+    return r;
   }
 
-  function generatePalette(mood) {
+  const ruleOk = (rule, pal) => !!rule
+    && !(rule.noSchemes && rule.noSchemes.includes(pal.scheme))
+    && !(rule.needsDark && !pal.canDark);
+  /** Правило пропорцій для кількості кольорів — shuffle bag у межах сумісних. */
+  function pickRule(size, pal) {
+    const i = drawTiered("rule:" + size, RULES.length, [(k) => RULES[k].size === size && ruleOk(RULES[k], pal), (k) => RULES[k].size === size]);
+    return RULES[i].id;
+  }
+
+  /** Нова палітра під настрій і кількість кольорів (50% кураторські, 50% процедурні). */
+  function generatePalette(mood, size = 5) {
     const prof = moodProfile(mood);
+    const allowDark = moodAllowsDark(prof);
+    let pal = null;
     if (Math.random() < 0.5) {
       const recent = S.recentCurated;
       const i = draw("palette:curated", D.palettes.length, (k) => !recent.includes(k) && fitScore(k, prof) <= CURATED_THRESHOLD
-        && paletteIsDistinct(dominantHue(D.palettes[k].colors), "curated", false), "soft");
+        && paletteIsDistinct(dominantHue(curatedHex(D.palettes[k])), D.palettes[k].scheme, false), "soft");
       if (i >= 0) {
         const p = D.palettes[i];
         recent.push(i);
         S.recentCurated = recent.slice(-30);
-        const colors = ensureContrast(p.colors.map((c) => c.toUpperCase()));
-        return { colors, scheme: "curated", schemeName: "кураторська", name: p.name, h: dominantHue(colors), curated: true };
+        const roles = Object.fromEntries(ROLE_KEYS.map((k) => [k, p.roles[k].toUpperCase()]));
+        pal = { roles, scheme: SCHEME_BY_ID[p.scheme] ? p.scheme : "mono", name: p.name, curated: true,
+          h: dominantHue([roles.main, roles.accent]), canDark: allowDark && (isDark(roles.background) || isDark(roles.text)) };
       }
     }
-    return generateProcedural(prof);
+    if (!pal) {
+      // база: відтінок, далекий від останніх 5 палітр (≥ 40°), інакше — інша схема
+      let scheme, base;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        scheme = SCHEMES[draw("scheme", SCHEMES.length)];
+        base = randomHue(prof.h);
+        for (let t = 0; t < 40 && !paletteIsDistinct(base, scheme.id, true); t++) base = randomHue(prof.h);
+        if (paletteIsDistinct(base, scheme.id, true)) break;
+        for (let t = 0; t < 30 && !paletteIsDistinct(base, scheme.id, false); t++) base = randomHue(prof.h);
+        if (paletteIsDistinct(base, scheme.id, false)) break;
+      }
+      pal = { roles: null, scheme: scheme.id, h: base, curated: false, canDark: allowDark };
+    }
+    pal.schemeName = SCHEME_BY_ID[pal.scheme].name;
+    pal.size = [3, 4, 5].includes(size) ? size : 5;
+    pal.ruleId = pickRule(pal.size, pal);
+    const wantDark = RULE_BY_ID[pal.ruleId].needsDark || moodPrefersDark(prof) ? true
+      : moodPrefersLight(prof) ? false
+      : pal.curated ? null : Math.random() < 0.15;
+    if (!pal.roles) pal.roles = generateRoles(prof, pal.scheme, pal.h, wantDark === true);
+    else { orientBackground(pal.roles, wantDark); fixTextContrast(pal.roles); }
+    return pal;
+  }
+
+  /* ---------- Палітра брифу: кількість кольорів, правило, обмеження ---------- */
+  /** Обмеження про кількість кольорів (пріоритет над paletteSize). Якщо їх два — менша кількість. */
+  function colorLimitOf(constraints) {
+    const map = D.colorLimits || {};
+    return (constraints || []).map((c) => map[c.text]).filter(Boolean).sort((a, b) => a.count - b.count)[0] || null;
+  }
+  const formatPaletteSize = (b) => {
+    const f = formatObj(b.profId, b.format);
+    return f && [3, 4, 5].includes(f.paletteSize) ? f.paletteSize : 4;
+  };
+  const briefPaletteSize = (b) => { const lim = colorLimitOf(b.constraints); return lim ? Math.max(3, lim.count) : formatPaletteSize(b); };
+
+  /** Узгоджує палітру з форматом і обмеженнями: кількість кольорів, правило, контрасти. */
+  function syncPalette(b) {
+    const p = b.palette;
+    if (!p || !p.roles) return b; // стара палітра з історії — показуємо як є
+    const lim = colorLimitOf(b.constraints);
+    if (lim) {
+      p.limit = lim.mode;
+      p.size = lim.count;
+      p.ruleId = "client";
+    } else {
+      const size = formatPaletteSize(b);
+      p.limit = null;
+      if (p.size !== size || !ruleOk(RULE_BY_ID[p.ruleId], p) || RULE_BY_ID[p.ruleId].size !== size) {
+        p.size = size;
+        p.ruleId = pickRule(size, p);
+      }
+      if (RULE_BY_ID[p.ruleId].needsDark) orientBackground(p.roles, true);
+      if (size === 3) {
+        fixTrioContrast(p.roles);
+        if (!p.curated) ensureAccentPops(p.roles, false);
+        if (!p.curated) fixTrioContrast(p.roles);
+      }
+    }
+    fixTextContrast(p.roles);
+    p.dark = isDark(p.roles.background);
+    p.colors = paletteView(p).items.map((x) => x.hex);
+    return b;
+  }
+
+  /** Що показувати: [{ label, hex, share }] + правило. */
+  function paletteView(p) {
+    if (!p.roles) return { items: (p.colors || []).map((hex) => ({ key: null, label: "", hex, share: null })), rule: null, legacy: true };
+    if (p.limit) {
+      const r = p.roles;
+      let items;
+      switch (p.limit) {
+        case "bw": items = [{ label: "Чорний", hex: "#111111" }, { label: "Білий", hex: "#FFFFFF" }]; break;
+        case "one-black": items = [{ label: "Головний", hex: r.main }, { label: "Чорний", hex: "#111111" }]; break;
+        case "mono1": items = [{ label: "Єдиний колір", hex: r.main }]; break;
+        case "grays-accent": items = [{ label: "Сірий 1", hex: "#2B2B2B" }, { label: "Сірий 2", hex: "#8A8A8A" }, { label: "Сірий 3", hex: "#E6E6E6" }, { label: "Акцент", hex: r.accent }]; break;
+        default: {
+          const second = [r.accent, r.text, r.background, r.secondary].sort((a, b) => contrast(b, r.main) - contrast(a, r.main))[0];
+          items = [{ label: "Колір 1", hex: r.main }, { label: "Колір 2", hex: second }];
+        }
+      }
+      return { items: items.map((x) => ({ key: null, share: null, ...x })), rule: CLIENT_RULE };
+    }
+    const rule = RULE_BY_ID[p.ruleId] || RULES.find((x) => x.size === p.size);
+    const keys = ROLES_BY_SIZE[p.size] || ROLE_KEYS;
+    return { items: keys.map((k) => ({ key: k, label: ROLE_NAMES[k], hex: p.roles[k], share: rule.shares[k] })), rule };
+  }
+  const paletteRuleLabel = (p, view) => (!view.rule ? cap(p.schemeName || "") : view.rule.id === "client" ? CLIENT_RULE.name : `${view.rule.name} · ${cap(p.schemeName || "")}`);
+  function paletteCopyText(p) {
+    const v = paletteView(p);
+    if (v.legacy) return v.items.map((x) => x.hex).join(", ");
+    const list = v.items.map((x) => `${x.label} ${x.hex}${x.share != null ? ` (${x.share}%)` : ""}`).join(", ");
+    return v.rule.id === "client" ? `${CLIENT_RULE.name} · ${list}` : `Правило ${v.rule.name} · ${list}`;
   }
 
   /* ---------- Генерація полів брифу ---------- */
@@ -506,8 +686,11 @@
     if (!audience) audience = keep("audience") && !audienceUnlocked ? prev.audience : pickAudience(niche.text);
     const mood = keep("mood") ? prev.mood : pickMood();
     const moodObj = D.moods[mood.index] || D.moods.find((m) => m.name === mood.name) || D.moods[0];
+    const constraints = pickConstraints(profId, level, keep("constraint") ? prev.constraints[0] : null);
+    // кількість кольорів: обмеження клієнта > paletteSize формату
+    const paletteSize = briefPaletteSize({ profId, format, constraints });
 
-    return {
+    return syncPalette({
       id: uid(),
       ts: Date.now(),
       level,
@@ -517,14 +700,14 @@
       niche,
       audience,
       mood,
-      constraints: pickConstraints(profId, level, keep("constraint") ? prev.constraints[0] : null),
+      constraints,
       deadline: pickDeadline(level),
       name: prev && L.name ? prev.name : pickName(),
-      palette: prev && L.palette ? prev.palette : generatePalette(moodObj),
+      palette: prev && L.palette ? JSON.parse(JSON.stringify(prev.palette)) : generatePalette(moodObj, paletteSize),
       wildcard: null, // з'являється в брифі лише після «Прийняти виклик» у поп-апі
       _twist: pickWildcard(niche),
       _audienceUnlocked: audienceUnlocked,
-    };
+    });
   }
 
   /** Перекрутити одне поле поточного брифу. */
@@ -551,12 +734,12 @@
       case "audience": b.audience = pickAudience(b.niche.text, b.audience); break;
       case "mood": {
         b.mood = pickMood();
-        if (!S.locks.palette) b.palette = generatePalette(D.moods[b.mood.index]);
+        if (!S.locks.palette) b.palette = generatePalette(D.moods[b.mood.index], briefPaletteSize(b));
         break;
       }
       case "constraint": b.constraints = pickConstraints(b.profId, b.level, null); break;
     }
-    return b;
+    return syncPalette(b); // формат, обмеження чи настрій могли змінити кількість кольорів
   }
 
   /** Фіксує бриф: історія анти-повторів, історія брифів, збереження. */
@@ -838,8 +1021,9 @@
     // інші барабани могли змінитися паралельно — беремо актуальний стан і переносимо наші поля
     const merged = { ...S.current };
     if (r.key === "mood") { merged.mood = next.mood; merged.palette = next.palette; }
-    else if (r.key === "constraint") merged.constraints = next.constraints;
-    else if (r.key === "niche") { merged.niche = next.niche; merged.audience = next.audience; merged.format = next.format; }
+    else if (r.key === "constraint") { merged.constraints = next.constraints; merged.palette = next.palette; }
+    else if (r.key === "niche") { merged.niche = next.niche; merged.audience = next.audience; merged.format = next.format; merged.palette = next.palette; }
+    else if (r.key === "format") { merged.format = next.format; merged.palette = next.palette; }
     else merged[r.key] = next[r.key];
     commit(merged, { isNew: false, changedKey: r.key, prevBrief: prev });
     renderCard(merged);
@@ -878,7 +1062,17 @@
     el.card.classList.remove("is-updating");
     const n = b.name;
     const isAsian = !!n.latin;
+    const pv = paletteView(b.palette);
     const pair = bestPair(b.palette.colors);
+    const contrastNote = (() => {
+      const r = b.palette.roles;
+      if (r && !b.palette.limit && b.palette.size === 5) {
+        const k = contrast(r.text, r.background);
+        return `Текст на Фоні — ${k.toFixed(1)}:1 ${k >= 7 ? "✓ AAA" : k >= 4.5 ? "✓ AA" : "✗"}`;
+      }
+      return b.palette.colors.length > 1 ? `найконтрастніша пара ${pair.a} / ${pair.b} — ${pair.ratio.toFixed(1)}:1` : "";
+    })();
+    const barItems = pv.items.map((x) => ({ ...x, w: x.share != null ? x.share : 100 / pv.items.length })).sort((x, y) => y.w - x.w);
     const level = LEVELS[b.level] || LEVELS.middle;
     const twist = b.wildcard && b.wildcard.audience ? b.wildcard : null;
     const lockBtn = (key, label) => `<button class="lock mini-lock" type="button" data-lock="${key}" aria-pressed="${!!S.locks[key]}" aria-label="${S.locks[key] ? "Розблокувати" : "Заблокувати"} ${label}" title="${S.locks[key] ? "Розблокувати" : "Заблокувати"}">${LOCK_SVG}</button>`;
@@ -908,21 +1102,32 @@
       </div>
 
       <div class="section-head">
-        <h3>Палітра</h3>
+        <h3>Палітра · ${pv.items.length} ${pv.items.length === 1 ? "колір" : pv.items.length < 5 ? "кольори" : "кольорів"}</h3>
         <div class="section-head__actions">
-          <button class="btn btn--tinted btn--small" type="button" data-action="copy-palette" aria-label="Скопіювати всю палітру">Скопіювати всі</button>
+          <button class="btn btn--tinted btn--small" type="button" data-action="copy-palette" aria-label="Скопіювати всю палітру з ролями й відсотками">Скопіювати палітру</button>
           ${lockBtn("palette", "палітру")}
         </div>
       </div>
-      <div class="palette">
-        ${b.palette.colors.map((c) => {
-          const fg = contrast(c, "#000000") > contrast(c, "#FFFFFF") ? "#000" : "#fff";
-          return `<button class="swatch" type="button" data-hex="${c}" aria-label="Скопіювати колір ${c}">
-            <span class="swatch__color" style="background:${c}"><span class="swatch__copied" style="color:${fg}">✓</span></span>
-            <span class="swatch__hex">${c}</span></button>`;
+      <div class="pal-rule">
+        <span class="pal-rule__name">${esc(paletteRuleLabel(b.palette, pv))}</span>
+        ${pv.rule ? `<span class="tip">
+          <button class="tip__btn" type="button" aria-label="Що означає правило «${esc(pv.rule.name)}»" aria-describedby="ruleTip">ⓘ</button>
+          <span class="tip__text" role="tooltip" id="ruleTip">${esc(pv.rule.tip)}${pv.rule.id !== "client" && b.palette.schemeName ? ` Схема гармонії: ${esc(b.palette.schemeName)}.` : ""}</span>
+        </span>` : ""}
+      </div>
+      <div class="pal-bar" role="img" aria-label="Пропорції кольорів: ${esc(barItems.map((x) => `${x.label || x.hex}${x.share != null ? " " + x.share + "%" : ""}`).join(", "))}">
+        ${barItems.map((x) => `<span style="flex-grow:${x.w};background:${x.hex}" title="${esc(x.label)} ${x.hex}${x.share != null ? " · " + x.share + "%" : ""}">${x.share != null && x.share >= 10 ? `<em style="color:${contrast(x.hex, "#000000") > contrast(x.hex, "#FFFFFF") ? "#000" : "#fff"}">${x.share}%</em>` : ""}</span>`).join("")}
+      </div>
+      <div class="palette" style="--n:${pv.items.length}">
+        ${pv.items.map((x) => {
+          const fg = contrast(x.hex, "#000000") > contrast(x.hex, "#FFFFFF") ? "#000" : "#fff";
+          return `<button class="swatch" type="button" data-hex="${x.hex}" aria-label="Скопіювати ${esc(x.label || "колір")} ${x.hex}">
+            <span class="swatch__color" style="background:${x.hex}"><span class="swatch__copied" style="color:${fg}">✓</span></span>
+            ${x.label ? `<span class="swatch__role">${esc(x.label)}${x.share != null ? `<span class="swatch__share">${x.share}%</span>` : ""}</span>` : ""}
+            <span class="swatch__hex">${x.hex}</span></button>`;
         }).join("")}
       </div>
-      <p class="palette__meta">${b.palette.curated ? `Кураторська «${esc(b.palette.name)}»` : `Схема: ${esc(b.palette.schemeName)}`} · під настрій «${esc(b.mood.name)}» · текст ${pair.a} на ${pair.b} — ${pair.ratio.toFixed(1)}:1</p>
+      <p class="palette__meta">${b.palette.curated ? `Кураторська «${esc(b.palette.name)}»` : "Згенерована"} · під настрій «${esc(b.mood.name)}»${contrastNote ? " · " + contrastNote : ""}</p>
 
       <div class="section-head"><h3>Обмеження${b.constraints.length > 1 ? " · 2" : ""}</h3></div>
       ${b.constraints.map((c) => `
@@ -981,7 +1186,7 @@
     const act = e.target.closest("[data-action]");
     if (!act || !S.current) return;
     const a = act.dataset.action;
-    if (a === "copy-palette") copyText(S.current.palette.colors.join(", "), "Палітру скопійовано");
+    if (a === "copy-palette") copyText(paletteCopyText(S.current.palette), "Палітру скопійовано");
     else if (a === "copy-brief") copyText(briefToText(S.current), "Бриф скопійовано");
     else if (a === "png") exportPNG(S.current);
     else if (a === "new") {
@@ -1007,7 +1212,7 @@
       `Ніша: ${cap(b.niche.text)} (${b.niche.cat}${nicheType(b) ? ", " + nicheType(b) : ""})`,
       `Аудиторія: ${cap(b.audience)}`,
       `Настрій: ${b.mood.name}`,
-      `Палітра: ${b.palette.colors.join(" ")}`,
+      `Палітра${b.palette.schemeName && !b.palette.limit ? ` (схема: ${b.palette.schemeName})` : ""}: ${paletteCopyText(b.palette)}`,
       ...b.constraints.map((c, i) => `⚠️ Обмеження${b.constraints.length > 1 ? " " + (i + 1) : ""}: ${constraintText(c)}`),
     ];
     if (b.deadline) lines.push(`⏱ Дедлайн: ${b.deadline}`);
@@ -1066,10 +1271,20 @@
         ${field("Аудиторія", cap(b.audience))}
         ${field("Настрій", b.mood.name, true)}
       </div>
-      <div class="ex-pal">${b.palette.colors.map((c) => `<div><i style="background:${c}"></i><span>${c}</span></div>`).join("")}</div>
+      ${exportPaletteHTML(b.palette)}
       ${b.constraints.map((c) => `<div class="ex-warn">⚠️ ${esc(constraintText(c))}</div>`).join("")}
       ${b.wildcard ? `<div class="ex-wild"><div><span class="ex-wild__badge">⚡ Твіст від клієнта</span>«${esc(wildText(b.wildcard))}»<span class="ex-wild__from">— ${esc(senderLabel(b.wildcard.sender))}</span></div></div>` : ""}
       <div class="ex-foot"><span>${esc(b.niche.emoji)} ${esc(b.niche.cat)}</span><span class="ex-credit">by ${AUTHOR.name} · ${AUTHOR.ig}</span></div>`;
+  }
+
+  function exportPaletteHTML(p) {
+    const v = paletteView(p);
+    const bar = v.items.map((x) => ({ ...x, w: x.share != null ? x.share : 100 / v.items.length })).sort((x, y) => y.w - x.w);
+    return `<div class="ex-palwrap">
+        <div class="ex-rule">${esc(paletteRuleLabel(p, v))}</div>
+        <div class="ex-bar">${bar.map((x) => `<i style="flex-grow:${x.w};background:${x.hex}"></i>`).join("")}</div>
+        <div class="ex-pal">${v.items.map((x) => `<div><i style="background:${x.hex}"></i>${x.label ? `<b>${esc(x.label)}${x.share != null ? " " + x.share + "%" : ""}</b>` : ""}<span>${x.hex}</span></div>`).join("")}</div>
+      </div>`;
   }
 
   async function exportPNG(b) {
@@ -1614,6 +1829,7 @@
     },
     state: () => S,
     instant: (on = true) => { instantMode = !!on; return instantMode; },
+    paletteView: (p) => paletteView(p || S.current.palette),
     /* Перевірка сумісності: SpinTheBrief.fits("web", "сторінка меню з цінами", "кафе, де …") */
     fits: (profId, formatName, nicheName) => formatFits(formatObj(profId, formatName), nicheTags({ text: nicheName })),
     /* Показати поп-ап клієнта для поточного брифу: SpinTheBrief.twist("messenger" | "call" | "email" | "voice") */
