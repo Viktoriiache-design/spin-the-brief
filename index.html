@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Spin the Brief — генератор дизайн-брифів</title>
+  <meta name="author" content="Viktoriia Chernenko">
+  <meta name="description" content="Крутни барабани — отримай випадковий бриф для дизайнера: формат, ніша, аудиторія, настрій, обмеження, назва клієнта й палітра.">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎰</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#reels">Перейти до барабанів</a>
+
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true">🎰</span>
+        <span class="brand__name">Spin the Brief</span>
+      </div>
+      <div class="topbar__actions">
+      <button class="icon-btn sound-toggle" id="soundToggle" type="button" aria-pressed="false" aria-label="Звук сповіщень від клієнта: вимкнено" title="Звук сповіщень">
+        <span class="sound-toggle__on" aria-hidden="true">🔔</span><span class="sound-toggle__off" aria-hidden="true">🔕</span>
+      </button>
+      <button class="btn btn--ghost" id="historyToggle" aria-expanded="false" aria-controls="historyPanel">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2"/></svg>
+        <span>Історія</span>
+        <span class="badge" id="historyCount" aria-hidden="true">0</span>
+      </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <h1>Генератор дизайн-брифів</h1>
+      <p class="hero__sub">Крутни барабани — отримай завдання, якого ще не було.<span class="hero__keys"> Тисни <kbd>Space</kbd>, щоб обертати, або <kbd>1</kbd>–<kbd>5</kbd> для окремого барабана.</span><span class="hero__touch"> Торкнись барабана, щоб перекрутити лише його.</span></p>
+    </section>
+
+    <section class="controls" aria-label="Налаштування брифу">
+      <div class="control">
+        <h2 class="control__label" id="profLabel">Професія</h2>
+        <div class="chips" role="radiogroup" aria-labelledby="profLabel" id="profChips"></div>
+      </div>
+      <div class="control control--level">
+        <h2 class="control__label" id="levelLabel">Рівень складності</h2>
+        <div class="segmented" role="radiogroup" aria-labelledby="levelLabel" id="levelSeg">
+          <button role="radio" data-level="junior" aria-checked="false">Junior</button>
+          <button role="radio" data-level="middle" aria-checked="true">Middle</button>
+          <button role="radio" data-level="senior" aria-checked="false">Senior</button>
+          <span class="segmented__thumb" aria-hidden="true"></span>
+        </div>
+        <p class="control__hint" id="levelHint"></p>
+      </div>
+    </section>
+
+    <section class="machine" aria-label="Барабани">
+      <div class="reels" id="reels"></div>
+      <div class="machine__actions">
+        <button class="btn btn--primary btn--xl" id="spinBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+          Обертати
+        </button>
+      </div>
+    </section>
+
+    <section class="result" aria-labelledby="resultTitle">
+      <h2 class="visually-hidden" id="resultTitle">Твій бриф</h2>
+      <div id="briefLive" aria-live="polite" aria-atomic="false">
+        <div class="empty" id="briefEmpty">
+          <div class="empty__icon" aria-hidden="true">✦</div>
+          <p>Бриф з'явиться тут, щойно барабани зупиняться.</p>
+        </div>
+        <article class="card" id="briefCard" hidden></article>
+      </div>
+    </section>
+  </main>
+
+  <aside class="drawer" id="historyPanel" aria-label="Історія брифів" hidden>
+    <div class="drawer__head">
+      <h2>Останні брифи</h2>
+      <button class="icon-btn" id="historyClose" aria-label="Закрити історію">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <ol class="history" id="historyList"></ol>
+    <p class="history__empty" id="historyEmpty">Поки порожньо. Крутни барабани!</p>
+    <button class="btn btn--ghost btn--small" id="historyClear">Очистити історію</button>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Поп-ап «повідомлення від клієнта» (wildcard) -->
+  <div class="twist-overlay" id="twistOverlay" hidden>
+    <div class="twist" id="twistDialog" role="dialog" aria-modal="true" aria-labelledby="twistTitle" tabindex="-1">
+      <h2 class="visually-hidden" id="twistTitle">Повідомлення від клієнта</h2>
+      <div class="twist__body" id="twistBody"></div>
+      <p class="visually-hidden" id="twistLive" aria-live="polite" aria-atomic="true"></p>
+      <div class="twist__actions" id="twistActions" hidden>
+        <button class="btn btn--primary" type="button" data-twist="accept">⚡ Прийняти виклик</button>
+        <button class="btn btn--ghost twist__refuse" type="button" data-twist="refuse">Відмовитися</button>
+        <span class="twist__tip" id="twistTip" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Вузол для експорту PNG (рендериться через html2canvas) -->
+  <div class="export-host" aria-hidden="true"><div class="export" id="exportNode"></div></div>
+
+  <footer class="footer">
+    <p class="footer__credit">
+      Зроблено дизайнеркою <strong>Viktoriia Chernenko</strong>
+      <a class="footer__ig" href="https://www.instagram.com/viktoriiache_/" target="_blank" rel="noopener" aria-label="Instagram Viktoriia Chernenko: @viktoriiache_ (відкриється в новій вкладці)">
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17.4" cy="6.6" r="1.2" fill="currentColor"/></svg>
+        <span>@viktoriiache_</span>
+      </a>
+    </p>
+    <p class="footer__meta">Spin the Brief · брифи для практики, портфоліо й розминки мозку</p>
+    <p class="footer__meta">© 2026 Viktoriia Chernenko</p>
+  </footer>
+
+  <script src="data/niches.js"></script>
+  <script src="data/moods.js"></script>
+  <script src="data/constraints.js"></script>
+  <script src="data/formats.js"></script>
+  <script src="data/names.js"></script>
+  <script src="data/palettes.js"></script>
+  <script src="data/deadlines.js"></script>
+  <script src="data/wildcards.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+  <script src="app.js"></script>
+</body>
+</html>
