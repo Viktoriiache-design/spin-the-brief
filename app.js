@@ -113,6 +113,7 @@
     emoji: (D.nicheCategories || {})[n.category] || "•",
     ci: Math.max(0, CATS.indexOf(n.category)),
     type: n.type || "B2C",
+    tags: Array.isArray(n.tags) ? n.tags : [n.type === "B2B" ? "B2B" : "B2C"],
     audiences: Array.isArray(n.audiences) && n.audiences.length ? n.audiences : ["широка аудиторія"],
   }));
   const NICHE_INDEX = new Map(NICHES.map((n, i) => [n.text, i]));
@@ -121,7 +122,9 @@
   const PROFS = D.professions;
   const PROF_BY_ID = Object.fromEntries(PROFS.map((p) => [p.id, p]));
   const ANY = { id: "any", name: "Будь-хто", emoji: "🎲" };
-  const ALL_FORMATS = PROFS.flatMap((p) => p.formats);
+  // формати — об'єкти { name, requires?, requiresAll?, excludes? }; рядки теж приймаємо
+  PROFS.forEach((p) => { p.formats = p.formats.map((f) => (typeof f === "string" ? { name: f } : f)); });
+  const ALL_FORMATS = PROFS.flatMap((p) => p.formats.map((f) => f.name));
   const ALL_CONSTRAINTS = [
     ...D.constraints.technical, ...D.constraints.client,
     ...Object.values(D.constraints.byProfession).flatMap((v) => [...v.technical, ...v.client]),
@@ -336,30 +339,83 @@
   const pairKey = (niche, format) => niche + "||" + format;
   const pairUsed = (niche, format) => S.pairs.includes(pairKey(niche, format));
 
-  function pickFormat(profId, nicheText) {
+  /* ---------- Сумісність формату й ніші ----------
+     Теги ніші (niches.js → tags) проти requires / requiresAll / excludes формату (formats.js). */
+  const nicheTags = (niche) => {
+    const n = niche && NICHES[NICHE_INDEX.get(niche.text)];
+    return n ? n.tags || [] : null; // null — ніша невідома (стара, з історії): сумісна з усім
+  };
+  function formatFits(f, tags) {
+    if (!f || !tags) return true;
+    const has = (t) => tags.includes(t);
+    if (f.requires && f.requires.length && !f.requires.some(has)) return false;
+    if (f.requiresAll && !f.requiresAll.every(has)) return false;
+    if (f.excludes && f.excludes.some(has)) return false;
+    return true;
+  }
+  const formatObj = (profId, name) => (PROF_BY_ID[profId] && PROF_BY_ID[profId].formats.find((f) => f.name === name)) || null;
+
+  /** Shuffle bag для відфільтрованого пулу (ніші, формати).
+      Кожне видане значення позначається номером поточного циклу. Беремо випадкове
+      з тих, що пройшли фільтр і ще не видавались у цьому циклі; новий цикл починається,
+      лише коли вичерпано саме відфільтровані варіанти — тож повторів немає, доки
+      не закінчаться сумісні значення. tiers — фільтри від найсуворішого до м'якшого.
+      -1 — фільтру не відповідає ніщо. */
+  function drawTiered(key, n, tiers) {
+    S.cycles = S.cycles && typeof S.cycles === "object" ? S.cycles : {};
+    let st = S.cycles[key];
+    if (!st || st.n !== n || typeof st.used !== "object") st = S.cycles[key] = { n, c: 1, used: {}, last: -1 };
+    const all = [...Array(n).keys()];
+    const take = (cands) => {
+      const i = pick(cands);
+      st.used[i] = st.c;
+      st.last = i;
+      return i;
+    };
+    const notLast = (i) => n < 2 || i !== st.last;
+    for (const f of tiers) {
+      const c = all.filter((i) => f(i) && (st.used[i] || 0) < st.c && notLast(i));
+      if (c.length) return take(c);
+    }
+    st.c += 1; // відфільтрований пул вичерпано — новий цикл
+    for (const f of tiers) {
+      const c = all.filter((i) => f(i) && notLast(i));
+      if (c.length) return take(c);
+    }
+    for (const f of tiers) {
+      const c = all.filter(f);
+      if (c.length) return take(c);
+    }
+    return -1;
+  }
+
+  /** Формат — лише сумісний із нішею; анти-повтори в межах відфільтрованого пулу. */
+  function pickFormat(profId, niche, exclude) {
     const list = PROF_BY_ID[profId].formats;
-    const i = draw("format:" + profId, list.length, nicheText ? (k) => !pairUsed(nicheText, list[k]) : null);
-    return list[i];
+    const tags = nicheTags(niche);
+    const ok = (k) => formatFits(list[k], tags) && list[k].name !== exclude;
+    let i = drawTiered("format:" + profId, list.length, [(k) => ok(k) && !(niche && pairUsed(niche.text, list[k].name)), ok]);
+    if (i < 0) i = drawTiered("format:" + profId, list.length, [() => true]); // недосяжно: універсальні формати є в кожній професії
+    return list[i].name;
   }
   const nicheObj = (i) => {
     const n = NICHES[i];
     return { text: n.text, cat: n.cat, emoji: n.emoji, ci: n.ci, type: n.type };
   };
-  /** Ніша. requireAudience — якщо аудиторія заблокована: беремо лише ніші, де вона є.
-      Повертає null, якщо таких ніш немає (окрім поточної excludeText). */
-  function pickNiche(formatText, ignoreCats, requireAudience, excludeText) {
+  /** Ніша.
+      format + profId  — формат заблокований: лише сумісні з ним ніші;
+      requireAudience  — аудиторія заблокована: лише ніші, де вона є;
+      excludeText      — не повертати поточну нішу.
+      Повертає null, якщо таких ніш немає. */
+  function pickNiche({ format = null, profId = null, ignoreCats = null, requireAudience = null, excludeText = null } = {}) {
     const cats = ignoreCats || S.recentCats;
-    const fresh = (k) => !cats.includes(NICHES[k].ci) && (!formatText || !pairUsed(NICHES[k].text, formatText));
-    if (!requireAudience) return nicheObj(draw("niche", NICHES.length, fresh));
-    const fits = (k) => NICHES[k].text !== excludeText && NICHES[k].audiences.includes(requireAudience);
-    let i = draw("niche", NICHES.length, (k) => fits(k) && fresh(k), "strict");
-    if (i < 0) i = draw("niche", NICHES.length, fits, "strict");
-    if (i < 0) {
-      const cands = NICHES.map((_, k) => k).filter(fits);
-      if (!cands.length) return null;
-      i = pick(cands);
-    }
-    return nicheObj(i);
+    const fObj = format && profId ? formatObj(profId, format) : null;
+    const base = (k) => NICHES[k].text !== excludeText
+      && formatFits(fObj, NICHES[k].tags)
+      && (!requireAudience || NICHES[k].audiences.includes(requireAudience));
+    const fresh = (k) => !cats.includes(NICHES[k].ci) && (!format || !pairUsed(NICHES[k].text, format));
+    const i = drawTiered("niche", NICHES.length, [(k) => base(k) && fresh(k), base]);
+    return i < 0 ? null : nicheObj(i);
   }
   /** Аудиторія завжди з поточної ніші; окремий мішок для кожної ніші. */
   function pickAudience(nicheText, exclude) {
@@ -434,18 +490,19 @@
     if (keep("format")) profId = prev.profId;
     else profId = S.settings.prof === "any" ? pickProfession() : S.settings.prof;
 
-    const nicheLocked = keep("niche");
-    let niche = nicheLocked ? prev.niche : null;
-    const format = keep("format") ? prev.format : pickFormat(profId, niche && niche.text);
-    // аудиторія завжди з ніші; якщо аудиторія заблокована — шукаємо ніші, де вона є
+    // спершу ніша (з урахуванням заблокованих формату й аудиторії), потім сумісний формат
+    const lockedFormat = keep("format") ? prev.format : null;
+    const excludeText = prev ? prev.niche.text : null;
+    let niche = keep("niche") ? prev.niche : null;
     let audience = null;
     let audienceUnlocked = false;
     if (!niche && keep("audience")) {
-      niche = pickNiche(format, null, prev.audience, prev.niche.text);
+      niche = pickNiche({ format: lockedFormat, profId, requireAudience: prev.audience, excludeText });
       if (niche) audience = prev.audience;
       else { L.audience = false; audienceUnlocked = true; }
     }
-    if (!niche) niche = pickNiche(format);
+    if (!niche) niche = pickNiche({ format: lockedFormat, profId, excludeText }) || pickNiche({ excludeText });
+    const format = lockedFormat || pickFormat(profId, niche);
     if (!audience) audience = keep("audience") && !audienceUnlocked ? prev.audience : pickAudience(niche.text);
     const mood = keep("mood") ? prev.mood : pickMood();
     const moodObj = D.moods[mood.index] || D.moods.find((m) => m.name === mood.name) || D.moods[0];
@@ -474,17 +531,21 @@
   function rerollField(brief, key) {
     const b = JSON.parse(JSON.stringify(brief));
     switch (key) {
-      case "format": b.format = pickFormat(b.profId, b.niche.text); break;
+      case "format": b.format = pickFormat(b.profId, b.niche, b.format); break;
       case "niche": {
-        const cats = S.recentCats.slice(0, -1).concat(b.niche.ci);
+        const ignoreCats = S.recentCats.slice(0, -1).concat(b.niche.ci);
+        const lockedFormat = S.locks.format ? b.format : null;
+        const opts = { format: lockedFormat, profId: b.profId, ignoreCats, excludeText: b.niche.text };
         let n = null;
         if (S.locks.audience) {
-          n = pickNiche(b.format, cats, b.audience, b.niche.text);
+          n = pickNiche({ ...opts, requireAudience: b.audience });
           if (!n) { S.locks.audience = false; b._audienceUnlocked = true; }
         }
-        if (!n) n = pickNiche(b.format, cats);
+        if (!n) n = pickNiche(opts) || pickNiche({ ignoreCats, excludeText: b.niche.text });
         b.niche = n;
         if (!S.locks.audience) b.audience = pickAudience(n.text, b.audience);
+        // формат несумісний з новою нішею — перекручуємо його (якщо не заблокований)
+        if (!S.locks.format && !formatFits(formatObj(b.profId, b.format), nicheTags(n))) b.format = pickFormat(b.profId, n, b.format);
         break;
       }
       case "audience": b.audience = pickAudience(b.niche.text, b.audience); break;
@@ -542,7 +603,7 @@
     switch (key) {
       case "format": {
         const p = S.settings.prof === "any" ? null : PROF_BY_ID[S.settings.prof];
-        return p ? p.formats : ALL_FORMATS;
+        return p ? p.formats.map((f) => f.name) : ALL_FORMATS;
       }
       case "niche": return NICHES.map((n) => n.text);
       case "audience": return ALL_AUDIENCES;
@@ -638,9 +699,10 @@
   const easeInOutSine = (t) => -(Math.cos(Math.PI * t) - 1) / 2;
   const SETTLE_AT = 0.86;
 
+  let instantMode = false; // для перевірок з консолі: SpinTheBrief.instant(true)
   function animateReel(r, finalText, duration) {
     return new Promise((resolve) => {
-      if (document.hidden) { // у фоновій вкладці rAF не працює — одразу ставимо результат
+      if (document.hidden || instantMode) { // у фоновій вкладці rAF не працює — одразу ставимо результат
         setReelRest(r, finalText);
         resolve();
         return;
@@ -753,32 +815,31 @@
       r.wrap.animate?.([{ transform: "translateX(0)" }, { transform: "translateX(-4px)" }, { transform: "translateX(4px)" }, { transform: "translateX(0)" }], { duration: 260 });
       return;
     }
-    // ніша тягне за собою аудиторію: поки крутиться ніша, барабан аудиторії теж зайнятий
-    const audReel = reelEls.find((x) => x.key === "audience");
-    if (r.key === "niche" && audReel.spinning) return;
+    // ніша тягне за собою формат і аудиторію: поки крутиться одне з них, інші чекають
+    const reelOf = (k) => reelEls.find((x) => x.key === k);
+    const linked = ["format", "audience"];
+    if (r.key === "niche" && linked.some((k) => reelOf(k).spinning)) return;
+    if (linked.includes(r.key) && reelOf("niche").spinning) return;
     const prev = S.current;
     const next = rerollField(prev, r.key);
     const unlocked = next._audienceUnlocked;
     delete next._audienceUnlocked;
-    const audFollows = r.key === "niche" && next.audience !== prev.audience;
+    const followers = r.key === "niche" ? linked.filter((k) => next[k] !== prev[k]).map(reelOf) : [];
     setSpinning(r, true);
-    if (audFollows) setSpinning(audReel, true);
+    followers.forEach((f) => setSpinning(f, true));
     if (unlocked) {
-      updateReelLabel(audReel);
+      updateReelLabel(reelOf("audience"));
       toast("Аудиторію оновлено під нову нішу");
     }
     S.current = next; // одразу, щоб паралельні кліки по інших барабанах бачили зміни
     await animateReel(r, reelText(next, r.key), 1300);
     setSpinning(r, false);
-    if (audFollows) {
-      await animateReel(audReel, reelText(next, "audience"), 950);
-      setSpinning(audReel, false);
-    }
+    await Promise.all(followers.map((f, k) => animateReel(f, reelText(next, f.key), 950 + k * 250).then(() => setSpinning(f, false))));
     // інші барабани могли змінитися паралельно — беремо актуальний стан і переносимо наші поля
     const merged = { ...S.current };
     if (r.key === "mood") { merged.mood = next.mood; merged.palette = next.palette; }
     else if (r.key === "constraint") merged.constraints = next.constraints;
-    else if (r.key === "niche") { merged.niche = next.niche; merged.audience = next.audience; }
+    else if (r.key === "niche") { merged.niche = next.niche; merged.audience = next.audience; merged.format = next.format; }
     else merged[r.key] = next[r.key];
     commit(merged, { isNew: false, changedKey: r.key, prevBrief: prev });
     renderCard(merged);
@@ -1552,6 +1613,9 @@
       return out;
     },
     state: () => S,
+    instant: (on = true) => { instantMode = !!on; return instantMode; },
+    /* Перевірка сумісності: SpinTheBrief.fits("web", "сторінка меню з цінами", "кафе, де …") */
+    fits: (profId, formatName, nicheName) => formatFits(formatObj(profId, formatName), nicheTags({ text: nicheName })),
     /* Показати поп-ап клієнта для поточного брифу: SpinTheBrief.twist("messenger" | "call" | "email" | "voice") */
     twist(format) {
       if (!S.current) return "Спершу покрути барабани";
